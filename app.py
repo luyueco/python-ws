@@ -7,21 +7,15 @@ import socket
 import struct
 import hashlib
 import base64
-import json
-import time
-import signal
 import subprocess
-import threading
 import asyncio
 import aiohttp
 import ipaddress
 import logging
 from aiohttp import web
-from typing import Optional
-from pathlib import Path
 
 # 环境变量
-UUID = os.environ.get('UUID', '5efabea4-f6d4-91fd-b8f0-17e004c89c60').replace('-', '') # 节点UUID
+UUID = os.environ.get('UUID', '7bd180e8-1142-4387-93f5-03e8d750a884')   # 节点UUID
 NEZHA_SERVER = os.environ.get('NEZHA_SERVER', '')    # 哪吒v0填写格式: nezha.xxx.com  哪吒v1填写格式: nezha.xxx.com:8008
 NEZHA_PORT = os.environ.get('NEZHA_PORT', '')        # 哪吒v1请留空，哪吒v0 agent端口
 NEZHA_KEY = os.environ.get('NEZHA_KEY', '')          # 哪吒v0或v1密钥，哪吒面板后台命令里获取
@@ -29,14 +23,15 @@ DOMAIN = os.environ.get('DOMAIN', 'your-domain.com') # 分配的域名或反代�
 SUB_PATH = os.environ.get('SUB_PATH', 'sub')         # 节点订阅路径
 NAME = os.environ.get('NAME', '')                    # 节点名称
 WSPATH = os.environ.get('WSPATH', UUID[:8])          # 节点路径
-PORT = int(os.environ.get('SERVER_PORT') or os.environ.get('PORT') or 3000)  # 节点端口
-AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '').lower() == 'true'            # 自动访问,默认关闭,true开启,false关闭
-DEBUG = os.environ.get('DEBUG', '').lower() == 'true' # 调试使用，保持默认
+PORT = int(os.environ.get('SERVER_PORT') or os.environ.get('PORT') or 3009)  # http和ws端口，默认自动优先获取容器分配的端口
+AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '').lower() == 'true'            # 自动访问保活,默认关闭,true开启,false关闭,需同时填写DOMAIN变量
+DEBUG = os.environ.get('DEBUG', '').lower() == 'true' # 调试使用，保持默认,true开启调试
 
 # 全局变量
+PROTOCOL_UUID = UUID.replace('-', '')
 CurrentDomain = DOMAIN
-Tls = 'tls'
 CurrentPort = 443
+Tls = 'tls'
 ISP = ''
 
 # dns server
@@ -47,13 +42,13 @@ BLOCKED_DOMAINS = [
 ]
 
 # 日志级别
-log_level = logging.DEBUG if DEBUG else logging.WARNING  # 默认只显示WARNING及以上级别
+log_level = logging.DEBUG if DEBUG else logging.WARNING 
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# 禁用aiohttp的访问日志
+# 禁用访问日志
 logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
 logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
 logging.getLogger('aiohttp.client').setLevel(logging.WARNING)
@@ -468,7 +463,7 @@ async def websocket_handler(request):
         await ws.close()
         return ws
     
-    proxy = ProxyHandler(UUID)
+    proxy = ProxyHandler(PROTOCOL_UUID)
     
     try:
         first_msg = await asyncio.wait_for(ws.receive(), timeout=5)
@@ -523,7 +518,7 @@ async def http_handler(request):
         
         # 生成配置链接
         vless_url = f"vless://{UUID}@{CurrentDomain}:{CurrentPort}?encryption=none&security={tls_param}&sni={CurrentDomain}&fp=chrome&type=ws&host={CurrentDomain}&path=%2F{WSPATH}#{name_part}"
-        trojan_url = f"trojan://{UUID}@{CurrentDomain}:{CurrentPort}?security={tls_param}&sni={CurrentDomain}&fp=chrome&type=ws&host={CurrentDomain}&path=%2F{WSPATH}#{name_part}"
+        trojan_url = f"trojan://{PROTOCOL_UUID}@{CurrentDomain}:{CurrentPort}?security={tls_param}&sni={CurrentDomain}&fp=chrome&type=ws&host={CurrentDomain}&path=%2F{WSPATH}#{name_part}"
         
         ss_method_password = base64.b64encode(f"none:{UUID}".encode()).decode()
         ss_url = f"ss://{ss_method_password}@{CurrentDomain}:{CurrentPort}?plugin=v2ray-plugin;mode%3Dwebsocket;host%3D{CurrentDomain};path%3D%2F{WSPATH};{ss_tls_param}sni%3D{CurrentDomain};skip-cert-verify%3Dtrue;mux%3D0#{name_part}"
@@ -581,7 +576,6 @@ async def run_nezha():
     
     command = ''
     tls_ports = ['443', '8443', '2096', '2087', '2083', '2053']
-    
     if NEZHA_SERVER and NEZHA_PORT and NEZHA_KEY:
         nezha_tls = '--tls' if NEZHA_PORT in tls_ports else ''
         command = f'nohup ./npm -s {NEZHA_SERVER}:{NEZHA_PORT} -p {NEZHA_KEY} {nezha_tls} --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &'
@@ -608,10 +602,10 @@ tls: {nz_tls}
 use_gitee_to_upgrade: false
 use_ipv6_country_code: false
 uuid: {UUID}"""
-            
+
             with open('config.yaml', 'w') as f:
                 f.write(config)
-        
+
         command = f'nohup ./npm -c config.yaml >/dev/null 2>&1 &'
     else:
         return
@@ -678,10 +672,8 @@ async def main():
     
     asyncio.create_task(delayed_cleanup())
     
-    # 添加自动访问任务
     await add_access_task()
     
-    # 保持运行
     try:
         await asyncio.Future()
     except KeyboardInterrupt:
