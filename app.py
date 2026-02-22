@@ -27,10 +27,10 @@ NEZHA_PORT = os.environ.get('NEZHA_PORT', '')        # 哪吒v1请留空，哪�
 NEZHA_KEY = os.environ.get('NEZHA_KEY', '')          # 哪吒v0或v1密钥，哪吒面板后台命令里获取
 DOMAIN = os.environ.get('DOMAIN', 'your-domain.com') # 分配的域名或反代后的域名
 SUB_PATH = os.environ.get('SUB_PATH', 'sub')         # 节点订阅路径
-PORT = int(os.environ.get('PORT', 3009))             # 节点端口
 NAME = os.environ.get('NAME', '')                    # 节点名称
 WSPATH = os.environ.get('WSPATH', UUID[:8])          # 节点路径
-AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '').lower() == 'true' # 自动访问,默认关闭,true开启,false关闭
+PORT = int(os.environ.get('SERVER_PORT') or os.environ.get('PORT') or 3000)  # 节点端口
+AUTO_ACCESS = os.environ.get('AUTO_ACCESS', '').lower() == 'true'            # 自动访问,默认关闭,true开启,false关闭
 DEBUG = os.environ.get('DEBUG', '').lower() == 'true' # 调试使用，保持默认
 
 # 全局变量
@@ -39,13 +39,14 @@ Tls = 'tls'
 CurrentPort = 443
 ISP = ''
 
+# dns server
 DNS_SERVERS = ['8.8.4.4', '1.1.1.1']
 BLOCKED_DOMAINS = [
     'speedtest.net', 'fast.com', 'speedtest.cn', 'speed.cloudflare.com', 'speedof.me',
     'testmy.net', 'bandwidth.place', 'speed.io', 'librespeed.org', 'speedcheck.org'
 ]
 
-# 设置日志 - 修改日志级别
+# 日志级别
 log_level = logging.DEBUG if DEBUG else logging.WARNING  # 默认只显示WARNING及以上级别
 logging.basicConfig(
     level=log_level,
@@ -62,7 +63,6 @@ logging.getLogger('aiohttp.websocket').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 def is_port_available(port, host='0.0.0.0'):
-    """检查端口是否可用"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.bind((host, port))
@@ -71,14 +71,12 @@ def is_port_available(port, host='0.0.0.0'):
             return False
 
 def find_available_port(start_port, max_attempts=100):
-    """查找可用端口"""
     for port in range(start_port, start_port + max_attempts):
         if is_port_available(port):
             return port
     return None
 
 def is_blocked_domain(host: str) -> bool:
-    """检查是否为被屏蔽的测速域名"""
     if not host:
         return False
     host_lower = host.lower()
@@ -86,7 +84,6 @@ def is_blocked_domain(host: str) -> bool:
               for blocked in BLOCKED_DOMAINS)
 
 async def get_isp():
-    """获取ISP信息"""
     global ISP
     try:
         async with aiohttp.ClientSession() as session:
@@ -115,7 +112,6 @@ async def get_isp():
     ISP = 'Unknown'
 
 async def get_ip():
-    """获取公网IP"""
     global CurrentDomain, Tls, CurrentPort
     if not DOMAIN or DOMAIN == 'your-domain.com':
         try:
@@ -137,7 +133,6 @@ async def get_ip():
         CurrentPort = 443
 
 async def resolve_host(host: str) -> str:
-    """DNS解析"""
     try:
         ipaddress.ip_address(host)
         return host
@@ -166,7 +161,7 @@ class ProxyHandler:
         self.uuid_bytes = bytes.fromhex(uuid)
         
     async def handle_vless(self, websocket, first_msg: bytes) -> bool:
-        """处理VLESS协议"""
+        """处理VLS协议"""
         try:
             if len(first_msg) < 18 or first_msg[0] != 0:
                 return False
@@ -213,10 +208,8 @@ class ProxyHandler:
                 await websocket.close()
                 return False
             
-            # 发送响应
             await websocket.send_bytes(bytes([0, 0]))
             
-            # 连接目标
             resolved_host = await resolve_host(host)
             
             try:
@@ -267,20 +260,19 @@ class ProxyHandler:
             return False
     
     async def handle_trojan(self, websocket, first_msg: bytes) -> bool:
-        """处理Trojan协议 - 修复UTF-8解码错误"""
+        """处理Tro协议"""
         try:
             if len(first_msg) < 58:
                 return False
             
-            # 不尝试将前56字节解码为UTF-8，直接作为字节比较
             received_hash_bytes = first_msg[:56]
             
             # 验证密码 - 使用字节比较
             hash_obj = hashlib.sha224()
             hash_obj.update(self.uuid.encode())
-            expected_hash_bytes = hash_obj.digest()  # 获取字节而不是hex字符串
+            expected_hash_bytes = hash_obj.digest()  # 获取字节
             
-            # 转换为hex字符串进行比较（原脚本使用hex比较）
+            # 转换为hex字符串进行比较
             received_hash_hex = received_hash_bytes.decode('ascii', errors='ignore')
             expected_hash_hex = hash_obj.hexdigest()
             
@@ -375,7 +367,7 @@ class ProxyHandler:
             return False
     
     async def handle_shadowsocks(self, websocket, first_msg: bytes) -> bool:
-        """处理Shadowsocks协议"""
+        """处理ss协议"""
         try:
             if len(first_msg) < 7:
                 return False
@@ -467,7 +459,6 @@ class ProxyHandler:
             return False
 
 async def websocket_handler(request):
-    """WebSocket连接处理器"""
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     
@@ -487,17 +478,17 @@ async def websocket_handler(request):
         
         msg_data = first_msg.data
         
-        # 尝试VLESS
+        # 尝试VLS
         if len(msg_data) > 17 and msg_data[0] == 0:
             if await proxy.handle_vless(ws, msg_data):
                 return ws
         
-        # 尝试Trojan
+        # 尝试Tro
         if len(msg_data) >= 58:
             if await proxy.handle_trojan(ws, msg_data):
                 return ws
         
-        # 尝试Shadowsocks
+        # 尝试ss
         if len(msg_data) > 0 and msg_data[0] in (1, 3, 4):
             if await proxy.handle_shadowsocks(ws, msg_data):
                 return ws
@@ -514,7 +505,6 @@ async def websocket_handler(request):
     return ws
 
 async def http_handler(request):
-    """HTTP请求处理器"""
     if request.path == '/':
         try:
             with open('index.html', 'r', encoding='utf-8') as f:
@@ -546,7 +536,6 @@ async def http_handler(request):
     return web.Response(status=404, text='Not Found\n')
 
 def get_download_url():
-    """获取哪吒客户端下载URL"""
     import platform
     arch = platform.machine()
     
@@ -562,7 +551,6 @@ def get_download_url():
             return 'https://amd64.eooce.com/agent'
 
 async def download_file():
-    """下载哪吒客户端"""
     if not NEZHA_SERVER and not NEZHA_KEY:
         return
     
@@ -575,14 +563,12 @@ async def download_file():
                     with open('npm', 'wb') as f:
                         f.write(content)
                     os.chmod('npm', 0o755)
-                    logger.info('npm downloaded successfully')
+                    logger.info('nz downloaded successfully')
     except Exception as e:
         logger.error(f'Download failed: {e}')
 
 async def run_nezha():
-    """运行哪吒监控"""
     try:
-        # 检查是否已在运行
         result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
         if './npm' in result.stdout and '[n]pm' in result.stdout:
             logger.info('npm is already running, skip...')
@@ -637,7 +623,6 @@ uuid: {UUID}"""
         logger.error(f'Error running npm: {e}')
 
 async def add_access_task():
-    """添加自动访问任务"""
     if not AUTO_ACCESS or not DOMAIN:
         return
     
@@ -652,7 +637,6 @@ async def add_access_task():
         pass
 
 def cleanup_files():
-    """清理临时文件"""
     for file in ['npm', 'config.yaml']:
         try:
             if os.path.exists(file):
@@ -661,7 +645,6 @@ def cleanup_files():
             pass
 
 async def main():
-    """主函数"""
     actual_port = PORT
     
     # 检查端口是否可用，如果不可用则查找可用端口
@@ -675,15 +658,14 @@ async def main():
             logger.error("No available ports found")
             sys.exit(1)
     
-    # 创建应用
     app = web.Application()
     
-    # 添加路由
+    # 路由
     app.router.add_get('/', http_handler)
     app.router.add_get(f'/{SUB_PATH}', http_handler)
     app.router.add_get(f'/{WSPATH}', websocket_handler)
     
-    # 启动服务器
+    # 启动服务
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', actual_port)
